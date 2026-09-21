@@ -62,6 +62,11 @@ python3 src/aiops_pipeline.py
 ```
 You should see the test suite pass cleanly (10 passed). The pipeline execution will confirm 10 records processed, 2 anomalies detected, and 2 events consumed (specifically for the timeouts at 10:05 and 10:06). The anomaly timestamps should be `2026-09-20T10:05:00` and `2026-09-20T10:06:00`.
 
+## Submission
+
+- Repository: [KzVaderog/github-skills-challenge](https://github.com/KzVaderog/github-skills-challenge)
+- Pull request: [#116](https://github.com/DebbieAUG/github-skills-challenge/pull/116)
+
 
 
 
