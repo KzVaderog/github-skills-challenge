@@ -11,90 +11,62 @@ Make sure your work is committed and pushed to your repository before submission
 
 Good luck!
 
-## AIOps Assessment Scenario
 
-For this assessment, I worked with a small monitoring workflow for a `payment-service`. The data includes normal payment requests and a short incident where requests slow down, resource usage increases, and timeout errors appear in the logs.
+## AIOps Monitoring Workflow
 
-The goal is to spot those problems and pass the findings through the supplied event workflow. In this example, AIOps means combining the service metrics and logs, applying the existing detection rules, and sending the resulting anomaly events to the next part of the pipeline.
+The AIOps monitoring workflow for the `payment-service` analyzes operational data, catches performance issues, and routes those findings through a simulated event pipeline. In this setup, AIOps means combining service metrics and logs, applying detection rules, and pushing the resulting anomalies downstream.
 
-## Repository Components
+The pipeline is built on a few core components:
 
-- `data/service_data.json` contains the operational service data, including metrics and log records.
-- `src/anomaly_detector.py` evaluates response time, CPU, memory, and log levels against anomaly rules.
-- `src/event_topic.py` provides the in-memory event topic used to pass anomaly events.
-- `src/event_producer.py` publishes detected anomalies to the topic.
-- `src/event_consumer.py` consumes events from the topic.
-- `src/aiops_pipeline.py` loads the data, coordinates detection and event flow, and reports the final AIOps results.
-- `src/calculations.py` contains standalone calculation examples used by the supporting tests.
-- `tests/` contains regression tests for the calculations and AIOps pipeline behavior.
+- **Data and rules:** `data/service_data.json` holds the metrics and logs. `src/anomaly_detector.py` evaluates CPU, memory, response time, and log severity against predefined rules.
 
+- **Event routing:** Detected anomalies are published by `src/event_producer.py` to an in-memory topic (`src/event_topic.py`), where they are picked up by `src/event_consumer.py`.
 
+- **Orchestration and testing:** Everything is tied together in `src/aiops_pipeline.py`, with supporting math in `src/calculations.py` and regression checks in the `tests/` directory.
 
-## Operational Data Analysis
+## Data Analysis and Anomaly Detection
 
-`data/service_data.json` contains 10 records for `payment-service`, covering `2026-09-20T10:00:00` to `2026-09-20T10:09:00`.
+The provided dataset covers 10 minutes of payment-service activity, with one record per minute from `10:00` to `10:09`. Most of the window shows healthy behavior: successful payments logged at `INFO` level, response times around 120-150 ms, CPU under 50%, and memory around 55%.
 
-The metric fields are `response_time_ms`, `cpu_percent`, and `memory_percent`. The log fields are `log_level` and `message`. Each record also has a `timestamp`, and the records are one minute apart, so it is easy to line up the metric changes with the log events.
+However, things went wrong between `10:05` and `10:06`. The `AnomalyDetector` is configured to flag response times over 500 ms, CPU or memory over 80%, and `ERROR` or `WARNING` logs. It caught the incident:
 
-Most of the records look normal. From `10:00` to `10:04` and again from `10:07` to `10:09`, the service reports successful payments at `INFO` level. Response time stays between 120 and 150 ms, CPU stays between 42% and 50%, and memory stays between 51% and 57%.
+- `10:05`: Response time reached 610 ms, accompanied by an `ERROR` log stating `Payment service timeout`.
 
-The two unusual records are `10:05` and `10:06`. At `10:05`, response time jumps to 610 ms and the log says `Payment service timeout` at `ERROR` level. At `10:06`, response time is 640 ms, CPU is 94%, memory is 91%, and the log reports a database connection timeout.
+- `10:06`: Response time reached 640 ms, CPU rose to 94%, memory reached 91%, and the log showed `Database connection timeout`.
 
-## Anomaly Detection Review
+The detector worked exactly as expected. It didn't miss the incident or falsely flag the healthy records, and each alert cleanly includes the original telemetry and the specific reason it triggered.
 
-The existing `AnomalyDetector` uses a 500 ms response-time limit and 80% limits for CPU and memory. It also flags `ERROR` and `WARNING` logs. Running it against the data produced these results:
+That said, one clear limitation of this approach is its reliance on static, hardcoded thresholds. It can't learn what "normal" looks like for this specific service over time, meaning a slow, creeping degradation that stays just under the 80% limit would easily slip under the radar.
 
-| Timestamp | Metric and log evidence | Detection reasons |
-| --- | --- | --- |
-| `2026-09-20T10:05:00` | 610 ms response time; 75% CPU; 70% memory; `ERROR`: `Payment service timeout` | High response time; error log detected |
-| `2026-09-20T10:06:00` | 640 ms response time; 94% CPU; 91% memory; `ERROR`: `Database connection timeout` | High response time; high CPU utilization; high memory utilization; error log detected |
+## Event Pipeline and Applied Fixes
+The event workflow is straightforward: the detector creates an ANOMALY event, the producer publishes it to a topic, and the consumer reads it back out. run_pipeline then packages these consumed events as the final output.
 
-All 10 records were processed and the expected two-record incident window was detected. I did not see a missed anomaly or a normal `INFO` record incorrectly flagged. Each result includes the timestamp, service, reasons, and original source record, so the reason for each alert is clear.
+While testing the end-to-end flow, I ran into a few underlying bugs and applied the following fixes:
 
-One limitation is that the rules use fixed thresholds. They do not learn what is normal for this service or look for gradual changes, so a slow deterioration that stays below a threshold could be missed.
+- **Log-level logic:** The detector was incorrectly labeling `WARNING` logs as errors and completely missing actual `ERROR` records. I split the logic to handle warnings and errors appropriately.
 
-## Event Streaming Workflow Review
+- **Topic mismatch:** The producer was sending events to `service-events`, but the consumer was listening to a different `anomaly-events` topic. I updated the pipeline to instantiate a single topic and pass it to both components.
 
-I traced the anomaly through the supplied components:
+- **Import errors:** Top-level imports were breaking when the test suite loaded the `src` package. Switching to package-relative imports, with a fallback for direct script execution, cleared this up.
 
-1. The `AnomalyDetector` creates an `ANOMALY` event when a record breaches a metric threshold or contains a concerning log level.
-2. The `EventProducer` receives that event and publishes it to the `EventTopic` named `service-events`.
-3. The `EventTopic` stores the published event in its in-memory message stream.
-4. The `EventConsumer` reads the event from the same topic.
-5. `run_pipeline` collects the consumed events and returns them as the downstream AIOps result, preserving the event reasons and source telemetry.
+After these corrections, the pipeline successfully processed all 10 records, generated the 2 expected events, and routed them flawlessly from producer to consumer.
 
-The run processed `10` records, detected `2` anomalies, and consumed `2` events. The detected and consumed lists were identical. The events corresponded to the payment timeout at `10:05` and the database connection timeout at `10:06`.
+## Reproducing the Workflow
+To run this locally, ensure you are using Python 3.13 or a compatible version and execute the following from the repository root:
 
-## Troubleshooting and Corrections
-
-I found three issues while checking the original workflow:
-
-- **Log-level check:** The detector was checking for `WARNING` but labeling it as an error, and it missed the dataset's `ERROR` records. I corrected the handling so `ERROR` and `WARNING` are treated separately. The rerun correctly flags both timeout records.
-- **Topic routing:** The producer was using `service-events` while the consumer was connected to a different `anomaly-events` topic. I changed the pipeline to create one topic and pass that same topic to both components. The rerun produced 2 events and consumed both of them.
-- **Imports:** The original top-level imports failed when the modules were loaded as the `src` package by the tests. Package-relative imports with a fallback for direct script execution fixed this. Both `pytest` and `python3 src/aiops_pipeline.py` now run successfully.
-
-## End-to-End Execution Result
-
-The final path was:
-
-`Operational Data -> Anomaly Detection -> Event -> Producer -> service-events Topic -> Consumer -> AIOps Pipeline`
-
-The final output processed 10 records, generated 2 `ANOMALY` events, published them to `service-events`, consumed both events, and returned them from `run_pipeline`. The reported issues were the payment service timeout at `10:05` and the database connection timeout at `10:06`, along with the metric and log reasons.
-
-## Reproduce the Demonstration
-
-From the repository root, use Python 3.13 or a compatible version:
 
 ```bash
 python3 -m pip install -r requirements.txt
 pytest -q
 python3 src/aiops_pipeline.py
 ```
+You should see the test suite pass cleanly (10 passed). The pipeline execution will confirm 10 records processed, 2 anomalies detected, and 2 events consumed (specifically for the timeouts at 10:05 and 10:06). The anomaly timestamps should be `2026-09-20T10:05:00` and `2026-09-20T10:06:00`.
 
-The tests should pass (`10 passed`). The pipeline should report 10 records processed, 2 anomalies detected, and 2 events consumed. The anomaly timestamps should be `2026-09-20T10:05:00` and `2026-09-20T10:06:00`.
+
+
+
 
 
 ---
 
 &copy; 2025 GitHub &bull; [Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/code_of_conduct.md) &bull; [MIT License](https://gh.io/mit)
-
